@@ -56,10 +56,10 @@ def extract_python_from_markdown(text: str) -> Optional[str]:
     # If there are common escape sequences like "\n" present in the raw text, try to decode them.
     # Use heuristics to avoid double-decoding proper text.
     try:
-        if ("\\n" in text or "\\t" in text or '\\"' in text) and text.count("\\n") > text.count("\n"):
+        if ("\n" in text or "\t" in text or '\"' in text) and text.count("\n") > text.count("\n"):
             decoded = bytes(text, "utf-8").decode("unicode_escape")
             # prefer decoded if it yields more real newlines
-            if decoded.count("\n") >= text.count("\\n"):
+            if decoded.count("\n") >= text.count("\n"):
                 text = decoded
     except Exception:
         # fallback: leave text as-is
@@ -520,20 +520,3 @@ def list_solutions():
         if p.is_dir():
             ids.append({'solution_id': p.name, 'files': [f.name for f in p.iterdir() if f.is_file()]})
     return {'solutions': ids}
-
-
-# curl -X POST "https://my-codegen-api2.onrender.com/generate" -F "file=@MyQ.zip" -o gen_response.json
-# cat gen_response.json | jq
-# curl.exe -X POST "https://my-codegen-api2.onrender.com/test" -F "solution_id="e0886c24-7bea-4137-b2e5-6d72062bf367" -F "test_file=@testin.txt" -o test_response.json
-# cat test_response.json | jq
-
-
-
-# curl.exe -X POST "https://my-codegen-api2.onrender.com/test" `
-#   -F "solution_id=e0886c24-7bea-4137-b2e5-6d72062bf367" `
-#   -F "test_file=@testin.txt" `
-#   -o test_response.json
-
-
-# curl "https://my-codegen-api2.onrender.com/download/e0886c24-7bea-4137-b2e5-6d72062bf367/coding_solution.py" -o coding_solution.py
-# curl "https://my-codegen-api2.onrender.com/download/e0886c24-7bea-4137-b2e5-6d72062bf367/test_output.txt" -o test_out.txt
