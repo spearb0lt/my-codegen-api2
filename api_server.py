@@ -1,19 +1,18 @@
-# api_server_two_step_v2.py
+# api_server_two_step_v3.py
 """
-Two-step FastAPI server (v2) with download endpoints and support for test_input file upload.
+Two-step FastAPI server (v3) - Robust & flexible per user's requests.
 
-Endpoints:
-  - GET /health
-  - POST /generate    : upload ZIP (statement, sample_in, sample_out). Generates code until sample passes.
-                         Returns JSON including 'solution' (code text), 'solution_id', 'solution_path', 'sample_stdout'.
-  - POST /test        : provide solution_id and either test_input (string form field) or test_file (uploaded file).
-                         Runs saved solution on test input; if it fails and GOOGLE_API_KEY available, attempts regeneration.
-                         Saves test_output.txt on server and returns JSON including 'test_stdout', 'test_stderr', 'test_output_path'.
-  - GET /download/{solution_id}/{filename} : download saved files like coding_solution.py or test_output.txt
-  - GET /solutions/{solution_id}/files : list saved files for solution
-
-Security note: This service executes generated Python code via subprocess (python -c). This is NOT secure for arbitrary untrusted input.
-For production, run executed code in isolated containers with no network and strict resource limits.
+Key features added in v3:
+ - /generate returns the cleaned generated code in JSON ("solution") and saves it on server.
+ - /test accepts either solution_id OR a direct 'solution' payload (the code text). If direct code is provided,
+   the server creates a new solution_id and saves the code so the test run is reproducible later.
+ - Both endpoints save helpful artifacts on the server (raw LLM text, sample files, sample stdout, test_output).
+ - Code extraction now decodes common escaped sequences (\\n, \\t) and strips markdown fences robustly.
+ - /download and /solutions endpoints for fetching and listing artifacts remain available.
+ - All responses include the code text ("solution") and test outputs in JSON so callers can save them locally.
+ 
+Security note: This service executes arbitrary Python code with `python -c`. It is NOT safe for untrusted public input.
+For contest use, prefer running code in isolated containers and/or ensure your deployment is private and access-controlled.
 """
 
 import os
@@ -23,17 +22,17 @@ import tempfile
 import subprocess
 import difflib
 import uuid
+import html
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional
 
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException
-from fastapi.responses import JSONResponse, FileResponse, PlainTextResponse
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Body
+from fastapi.responses import JSONResponse, FileResponse
 
-# Regex helper for extracting code fences
 import re
 CODE_FENCE_RE = re.compile(r"```(?:python)?\s*\n([\s\S]*?)```", re.IGNORECASE)
 
-app = FastAPI(title="Code-Gen Two-Step API v2")
+app = FastAPI(title="Code-Gen Two-Step API v3")
 
 # Configuration (tweak via environment variables)
 SOLUTIONS_DIR = Path(os.getenv("SOLUTIONS_DIR", "solutions"))
@@ -44,16 +43,37 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 MAX_GENERATION_ATTEMPTS = int(os.getenv("MAX_GENERATION_ATTEMPTS", "4"))
 EXECUTION_TIMEOUT = int(os.getenv("EXECUTION_TIMEOUT", "8"))  # seconds
 
-
 def extract_python_from_markdown(text: str) -> Optional[str]:
+    """
+    Extract the code from a fenced markdown block if present. Otherwise return the entire text.
+    Also perform a safe unicode-escape decoding to turn literal "\\n" sequences into real newlines when appropriate.
+    """
     if not text:
         return None
-    if "```python" in text or "```" in text:
-        m = CODE_FENCE_RE.search(text)
-        if m:
-            return m.group(1).strip()
-    # fallback: return full text
-    return text.strip()
+    # If there are common escape sequences like "\n" present in the raw text, try to decode them.
+    # Use heuristics to avoid double-decoding proper text.
+    try:
+        if ("\\n" in text or "\\t" in text or '\\"' in text) and text.count("\\n") > text.count("\n"):
+            decoded = bytes(text, "utf-8").decode("unicode_escape")
+            # prefer decoded if it yields more real newlines
+            if decoded.count("\n") >= text.count("\\n"):
+                text = decoded
+    except Exception:
+        # fallback: leave text as-is
+        pass
+
+    # Try to extract fenced code block
+    m = CODE_FENCE_RE.search(text)
+    if m:
+        code = m.group(1)
+    else:
+        code = text
+
+    # Some LLMs may return HTML-escaped text; unescape common entities
+    code = html.unescape(code)
+    # Normalize line endings and strip outer whitespace/newlines
+    code = code.replace("\r\n", "\n").replace("\r", "\n").strip("\n")
+    return code
 
 def unpack_zip_to_dir(zip_bytes: bytes, dest_dir: Path) -> None:
     with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmpf:
@@ -91,6 +111,7 @@ def find_problem_files(workdir: Path):
 def run_python_code_str(code_str: str, input_str: str, timeout=EXECUTION_TIMEOUT):
     """
     Run code_str with `python -c` in a subprocess and return dict with stdout, stderr, timed_out.
+    Note: This is not sandboxed. Use only in controlled environments.
     """
     try:
         p = subprocess.Popen(
@@ -111,11 +132,25 @@ def run_python_code_str(code_str: str, input_str: str, timeout=EXECUTION_TIMEOUT
     except Exception as e:
         return {"stdout": "", "stderr": f"Runtime error: {e}", "timed_out": False, "returncode": None}
 
+def save_solution_on_server(solution_text: str, solution_dir: Path, metadata: dict):
+    """
+    Save solution text and metadata into the solution_dir.
+    Returns path of saved code.
+    """
+    solution_dir.mkdir(parents=True, exist_ok=True)
+    coding_path = solution_dir / 'coding_solution.py'
+    # Normalize newlines
+    solution_text_norm = solution_text.replace("\r\n", "\n").replace("\r", "\n")
+    coding_path.write_text(solution_text_norm, encoding='utf-8')
+    # Save metadata & raw LLM response if present
+    if 'raw_llm' in metadata and metadata['raw_llm'] is not None:
+        (solution_dir / 'llm_response.txt').write_text(metadata['raw_llm'], encoding='utf-8')
+    (solution_dir / 'metadata.json').write_text(str(metadata), encoding='utf-8')
+    return coding_path
 
 @app.get("/health")
 def health():
     return {"status": "ok", "model_configured": bool(GOOGLE_API_KEY)}
-
 
 @app.post("/generate")
 async def generate(file: UploadFile = File(...)):
@@ -125,7 +160,6 @@ async def generate(file: UploadFile = File(...)):
     Saves successful solution as solutions/<id>/coding_solution.py and returns JSON including the code text.
     """
     if not GOOGLE_API_KEY:
-        # Allow generation to still run locally if you want to test without LLM, but here require key.
         raise HTTPException(status_code=500, detail="Server missing GOOGLE_API_KEY env var for generation.")
 
     tmp_root = Path(tempfile.mkdtemp(prefix="gen_"))
@@ -151,6 +185,7 @@ async def generate(file: UploadFile = File(...)):
 
         last_code = None
         last_error = ""
+        raw_llm_text = None
         for attempt in range(1, MAX_GENERATION_ATTEMPTS + 1):
             if attempt == 1:
                 prompt = f"""You are an expert competitive programmer. Write a Python 3 solution that reads from standard input and writes to standard output.
@@ -193,7 +228,8 @@ Please provide a corrected complete Python solution in one markdown block.
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"LLM call failed: {e}")
 
-            code_candidate = extract_python_from_markdown(resp.text or "") or (resp.text or "").strip()
+            raw_llm_text = resp.text or ""
+            code_candidate = extract_python_from_markdown(raw_llm_text) or raw_llm_text.strip()
             last_code = code_candidate
 
             # Run candidate against sample input
@@ -212,16 +248,14 @@ Please provide a corrected complete Python solution in one markdown block.
                 last_error = f"Sample mismatch. Diff:\\n{diff}\\nStdout:\\n{sample_run['stdout']}\\nStderr:\\n{sample_run['stderr']}"
                 continue
 
-            # Success on sample -> persist solution
+            # Success on sample -> persist solution (save raw LLM text too)
             solution_id = str(uuid.uuid4())
             solution_dir = SOLUTIONS_DIR / solution_id
-            solution_dir.mkdir(parents=True, exist_ok=True)
-            coding_path = solution_dir / 'coding_solution.py'
-            solution_text = code_candidate
-            coding_path.write_text(solution_text, encoding='utf-8')
-            # save sample stdout for reference
+            metadata = {"solution_id": solution_id, "attempt": attempt, "raw_llm": raw_llm_text}
+            coding_path = save_solution_on_server(code_candidate, solution_dir, metadata)
+
+            # save sample stdout and statement/sample files
             (solution_dir / 'sample_stdout.txt').write_text(sample_run['stdout'], encoding='utf-8')
-            # also save the original statement and sample files
             (solution_dir / 'statement.txt').write_text(statement_text, encoding='utf-8')
             (solution_dir / 'sample_in.txt').write_text(sample_in_text, encoding='utf-8')
             (solution_dir / 'sample_out.txt').write_text(sample_out_text, encoding='utf-8')
@@ -232,7 +266,8 @@ Please provide a corrected complete Python solution in one markdown block.
                 'solution_id': solution_id,
                 'sample_stdout': sample_run['stdout'],
                 'solution_path': str(coding_path),
-                'solution': solution_text
+                'solution': code_candidate,
+                'raw_llm': raw_llm_text
             })
 
         # exhausted attempts
@@ -245,75 +280,117 @@ Please provide a corrected complete Python solution in one markdown block.
 
 
 @app.post("/test")
-async def test_solution(solution_id: str = Form(...), test_input: Optional[str] = Form(None), test_file: Optional[UploadFile] = File(None), test_expected: Optional[str] = Form(None)):
+async def test_solution(
+    solution_id: Optional[str] = Form(None),
+    test_input: Optional[str] = Form(None),
+    test_file: Optional[UploadFile] = File(None),
+    solution: Optional[str] = Form(None),
+    statement: Optional[str] = Form(None),
+    sample_in: Optional[str] = Form(None),
+    sample_out: Optional[str] = Form(None),
+    test_expected: Optional[str] = Form(None)
+):
     """
-    Run the saved solution on provided test_input. Accepts either 'test_input' (string) or 'test_file' (uploaded file).
-    If it fails, attempt regeneration using the LLM (if GOOGLE_API_KEY is set).
-    On success, save solutions/<id>/test_output.txt and return JSON including test_stdout and test_output_path.
+    Run the saved solution on provided test_input. Accepts:
+      - solution_id (use previously saved code)
+      - OR 'solution' (code text) to create a new solution and run it (server will save it)
+    Also accepts test_file upload OR test_input string. Optional test_expected to compare.
+    If initial run fails and GOOGLE_API_KEY is provided, attempts regeneration using LLM.
+    Returns JSON that includes 'solution' (final code used) and test stdout/stderr.
     """
-    solution_dir = SOLUTIONS_DIR / solution_id
-    if not solution_dir.exists():
-        raise HTTPException(status_code=404, detail="solution_id not found")
+    # Validate test input presence
+    if test_file is None and test_input is None:
+        raise HTTPException(status_code=400, detail="Provide test_file (upload) or test_input (form field).")
 
-    coding_path = solution_dir / 'coding_solution.py'
-    if not coding_path.exists():
-        raise HTTPException(status_code=404, detail="Saved solution not found for this solution_id")
+    # If solution text provided directly, create a new saved solution entry (so it becomes persistent)
+    if solution is not None:
+        # create new solution_id and save provided code and provided problem files (if any)
+        new_id = str(uuid.uuid4())
+        solution_dir = SOLUTIONS_DIR / new_id
+        metadata = {"solution_id": new_id, "provided_directly": True}
+        # save provided statement/sample if present
+        if statement is not None:
+            (solution_dir).mkdir(parents=True, exist_ok=True)
+            (solution_dir / 'statement.txt').write_text(statement, encoding='utf-8')
+        if sample_in is not None:
+            (solution_dir).mkdir(parents=True, exist_ok=True)
+            (solution_dir / 'sample_in.txt').write_text(sample_in, encoding='utf-8')
+        if sample_out is not None:
+            (solution_dir).mkdir(parents=True, exist_ok=True)
+            (solution_dir / 'sample_out.txt').write_text(sample_out, encoding='utf-8')
+        coding_path = save_solution_on_server(solution, solution_dir, metadata)
+        solution_id = new_id
+    elif solution_id is not None:
+        # use existing saved solution
+        solution_dir = SOLUTIONS_DIR / solution_id
+        if not solution_dir.exists():
+            raise HTTPException(status_code=404, detail="solution_id not found")
+        coding_path = solution_dir / 'coding_solution.py'
+        if not coding_path.exists():
+            raise HTTPException(status_code=404, detail="coding_solution.py not found for this solution_id")
+    else:
+        raise HTTPException(status_code=400, detail="Provide either solution_id or solution (code text) in the request.")
 
-    # Determine test input (prefer uploaded file)
+    # get test input text
     if test_file is not None:
         test_input_text = (await test_file.read()).decode('utf-8')
-    elif test_input is not None:
-        test_input_text = test_input
     else:
-        raise HTTPException(status_code=400, detail="Provide either 'test_input' (form) or 'test_file' (uploaded file)")
+        test_input_text = test_input
 
-    # Helper to save test output
-    def save_test_output(text: str):
-        (solution_dir / 'test_output.txt').write_text(text, encoding='utf-8')
-
-    # Load current code
+    # run current code on test input
     current_code = coding_path.read_text(encoding='utf-8')
-
-    # Run current code on test input
     run_res = run_python_code_str(current_code, test_input_text, timeout=EXECUTION_TIMEOUT)
-    # Quick success check: no stderr, no timeout, and if expected provided, must match
-    def outputs_match(out: str, expected: str) -> bool:
-        return "\n".join(line.rstrip() for line in out.strip().splitlines()) == "\n".join(line.rstrip() for line in expected.strip().splitlines())
 
-    if not run_res['timed_out'] and run_res['stderr'] == '' and (test_expected is None or outputs_match(run_res['stdout'], test_expected)):
-        save_test_output(run_res['stdout'])
-        return JSONResponse({'status': 'ok', 'solution_id': solution_id, 'test_stdout': run_res['stdout'], 'test_stderr': run_res['stderr'], 'test_output_path': str(solution_dir / 'test_output.txt')})
+    def normalize_out(s: str) -> str:
+        return "\n".join(line.rstrip() for line in s.strip().splitlines())
 
-    # If we get here, initial run failed. Save raw output for debugging.
-    save_test_output(run_res['stdout'] + "\n[stderr]\n" + run_res['stderr'])
+    # if run OK and matches expected (if provided), save and return
+    if not run_res['timed_out'] and run_res['stderr'] == '' and (test_expected is None or normalize_out(run_res['stdout']) == normalize_out(test_expected)):
+        (solution_dir / 'test_output.txt').write_text(run_res['stdout'], encoding='utf-8')
+        return JSONResponse({
+            'status': 'ok',
+            'solution_id': solution_id,
+            'test_stdout': run_res['stdout'],
+            'test_stderr': run_res['stderr'],
+            'test_output_path': str(solution_dir / 'test_output.txt'),
+            'solution': current_code
+        })
 
-    # If no GOOGLE_API_KEY available, return failure and the run result.
+    # save raw output for debugging
+    (solution_dir / 'test_output.txt').write_text(run_res['stdout'] + "\n[stderr]\n" + run_res['stderr'], encoding='utf-8')
+
+    # If no LLM key available, return failure and the run result for debugging
     if not GOOGLE_API_KEY:
-        return JSONResponse({'status': 'failed', 'reason': 'no_google_api_key', 'run_result': run_res}, status_code=400)
+        return JSONResponse({'status': 'failed', 'reason': 'no_google_api_key', 'run_result': run_res, 'solution': current_code}, status_code=400)
 
-    # Regeneration loop: try to fix using LLM, up to MAX_GENERATION_ATTEMPTS
+    # Attempt regeneration using LLM feedback
     try:
         import google.generativeai as genai
     except Exception as e:
-        return JSONResponse({'status': 'failed', 'reason': f'missing_llm_lib: {e}', 'run_result': run_res}, status_code=500)
+        return JSONResponse({'status': 'failed', 'reason': f'missing_llm_lib: {e}', 'run_result': run_res, 'solution': current_code}, status_code=500)
 
     genai.configure(api_key=GOOGLE_API_KEY)
     model = genai.GenerativeModel(MODEL_NAME)
 
     last_code = current_code
-    last_error = f"Initial run failed. stdout:\n{run_res['stdout']}\nstderr:\n{run_res['stderr']}"
+    last_error = f"Initial run failed. stdout:\\n{run_res['stdout']}\\nstderr:\\n{run_res['stderr']}"
+
+    # Use statement/sample from saved solution_dir if available, else use provided statement/sample from request if any
+    statement_text = (solution_dir / 'statement.txt').read_text(encoding='utf-8') if (solution_dir / 'statement.txt').exists() else (statement or "")
+    sample_in_text = (solution_dir / 'sample_in.txt').read_text(encoding='utf-8') if (solution_dir / 'sample_in.txt').exists() else (sample_in or "")
+    sample_out_text = (solution_dir / 'sample_out.txt').read_text(encoding='utf-8') if (solution_dir / 'sample_out.txt').exists() else (sample_out or "")
 
     for attempt in range(1, MAX_GENERATION_ATTEMPTS + 1):
         prompt = f"""You are an expert competitive programmer. Previously the following solution was produced for the problem statement below. It passed the sample tests but it failed on a later test input. Please provide a corrected complete Python 3 solution that (1) still passes the provided sample input/output and (2) runs correctly on the failing test input.
 
 Problem statement:
-{(solution_dir / 'statement.txt').read_text(encoding='utf-8') if (solution_dir / 'statement.txt').exists() else ''}
+{statement_text}
 
 Sample Input:
-{(solution_dir / 'sample_in.txt').read_text(encoding='utf-8') if (solution_dir / 'sample_in.txt').exists() else ''}
+{sample_in_text}
 
 Sample Output:
-{(solution_dir / 'sample_out.txt').read_text(encoding='utf-8') if (solution_dir / 'sample_out.txt').exists() else ''}
+{sample_out_text}
 
 Previous code:
 ```python
@@ -332,30 +409,30 @@ If a corrected solution is provided, reply with the full Python code in a single
         try:
             resp = model.generate_content(prompt)
         except Exception as e:
-            return JSONResponse({'status': 'failed', 'reason': f'LLM_call_failed: {e}', 'run_result': run_res}, status_code=500)
+            return JSONResponse({'status': 'failed', 'reason': f'LLM_call_failed: {e}', 'run_result': run_res, 'solution': current_code}, status_code=500)
 
-        code_candidate = extract_python_from_markdown(resp.text or "") or (resp.text or "").strip()
+        raw_llm_text = resp.text or ""
+        code_candidate = extract_python_from_markdown(raw_llm_text) or (raw_llm_text or "").strip()
         last_code = code_candidate
 
         # Re-run candidate on sample first to ensure it still passes sample tests
-        sample_in_text = (solution_dir / 'sample_in.txt').read_text(encoding='utf-8') if (solution_dir / 'sample_in.txt').exists() else ''
-        sample_out_text = (solution_dir / 'sample_out.txt').read_text(encoding='utf-8') if (solution_dir / 'sample_out.txt').exists() else ''
-        sample_run = run_python_code_str(code_candidate, sample_in_text, timeout=EXECUTION_TIMEOUT)
-        sample_out_norm = "\n".join(line.rstrip() for line in sample_run["stdout"].strip().splitlines())
-        expected_norm = "\n".join(line.rstrip() for line in sample_out_text.strip().splitlines())
+        if sample_in_text and sample_out_text:
+            sample_run = run_python_code_str(code_candidate, sample_in_text, timeout=EXECUTION_TIMEOUT)
+            sample_out_norm = "\n".join(line.rstrip() for line in sample_run["stdout"].strip().splitlines())
+            expected_norm = "\n".join(line.rstrip() for line in sample_out_text.strip().splitlines())
 
-        if sample_run["timed_out"]:
-            last_error = f"Sample run timed out: {sample_run['stderr']}"
-            continue
-        if sample_run["stderr"]:
-            last_error = f"Sample runtime error after regen: {sample_run['stderr']}"
-            continue
-        if sample_out_norm != expected_norm:
-            diff = "".join(difflib.unified_diff(expected_norm.splitlines(keepends=True), sample_out_norm.splitlines(keepends=True), fromfile='expected', tofile='actual'))
-            last_error = f"Sample mismatch after regen. Diff:\n{diff}\nStdout:\n{sample_run['stdout']}\nStderr:\n{sample_run['stderr']}"
-            continue
+            if sample_run["timed_out"]:
+                last_error = f"Sample run timed out: {sample_run['stderr']}"
+                continue
+            if sample_run["stderr"]:
+                last_error = f"Sample runtime error after regen: {sample_run['stderr']}"
+                continue
+            if sample_out_norm != expected_norm:
+                diff = "".join(difflib.unified_diff(expected_norm.splitlines(keepends=True), sample_out_norm.splitlines(keepends=True), fromfile='expected', tofile='actual'))
+                last_error = f"Sample mismatch after regen. Diff:\n{diff}\nStdout:\n{sample_run['stdout']}\nStderr:\n{sample_run['stderr']}"
+                continue
 
-        # If sample passes, run on test input
+        # If sample passes (or was not provided), run on test input
         test_run = run_python_code_str(code_candidate, test_input_text, timeout=EXECUTION_TIMEOUT)
         test_out_norm = "\n".join(line.rstrip() for line in test_run["stdout"].strip().splitlines())
 
@@ -369,7 +446,7 @@ If a corrected solution is provided, reply with the full Python code in a single
             expected_test_norm = "\n".join(line.rstrip() for line in test_expected.strip().splitlines())
             if test_out_norm != expected_test_norm:
                 diff = "".join(difflib.unified_diff(expected_test_norm.splitlines(keepends=True), test_out_norm.splitlines(keepends=True), fromfile='expected_test', tofile='actual_test'))
-                last_error = f"Test mismatch after regen. Diff:\n{diff}\nStdout:\n{test_run['stdout']}\nStderr:\n{test_run['stderr']}"
+                last_error = f"Test mismatch after regen. Diff:\n{diff}\\nStdout:\n{test_run['stdout']}\nStderr:\n{test_run['stderr']}"
                 continue
         else:
             if test_out_norm == "":
@@ -379,11 +456,13 @@ If a corrected solution is provided, reply with the full Python code in a single
         # Success: overwrite saved solution and write test output
         coding_path.write_text(code_candidate, encoding='utf-8')
         (solution_dir / 'test_output.txt').write_text(test_run['stdout'], encoding='utf-8')
-        return JSONResponse({'status': 'ok', 'solution_id': solution_id, 'test_stdout': test_run['stdout'], 'test_stderr': test_run['stderr'], 'test_output_path': str(solution_dir / 'test_output.txt'), 'attempts': attempt})
+        # save raw llm text
+        (solution_dir / 'llm_response.txt').write_text(raw_llm_text, encoding='utf-8')
+        return JSONResponse({'status': 'ok', 'solution_id': solution_id, 'test_stdout': test_run['stdout'], 'test_stderr': test_run['stderr'], 'test_output_path': str(solution_dir / 'test_output.txt'), 'solution': code_candidate, 'attempts': attempt})
 
     # Exhausted regeneration attempts: save last run output and return failure
     (solution_dir / 'test_output.txt').write_text(run_res['stdout'] + "\n[stderr]\n" + run_res['stderr'], encoding='utf-8')
-    return JSONResponse({'status': 'failed', 'reason': 'regeneration_exhausted', 'last_error': last_error, 'last_solution': last_code}, status_code=400)
+    return JSONResponse({'status': 'failed', 'reason': 'regeneration_exhausted', 'last_error': last_error, 'last_solution': last_code, 'solution': last_code}, status_code=400)
 
 
 @app.get("/download/{solution_id}/{filename}")
@@ -396,7 +475,7 @@ def download_file(solution_id: str, filename: str):
         raise HTTPException(status_code=404, detail="solution_id not found")
 
     # For safety, only allow certain filenames or files inside the dir
-    allowed = {'coding_solution.py', 'test_output.txt', 'sample_stdout.txt', 'statement.txt', 'sample_in.txt', 'sample_out.txt'}
+    allowed = {'coding_solution.py', 'test_output.txt', 'sample_stdout.txt', 'statement.txt', 'sample_in.txt', 'sample_out.txt', 'llm_response.txt'}
     if filename not in allowed:
         raise HTTPException(status_code=400, detail="Requested filename not allowed")
 
