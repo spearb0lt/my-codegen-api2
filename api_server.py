@@ -28,7 +28,7 @@ from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
 
 import re
-CODE_FENCE_RE = re.compile(r"```(?:python)?\s*\\n([\\s\\S]*?)```", re.IGNORECASE)
+CODE_FENCE_RE = re.compile(r"```(?:python)?\s*\n([\s\S]*?)```", re.IGNORECASE)
 
 app = FastAPI(title="Code-Gen Two-Step Final API")
 
@@ -248,7 +248,7 @@ Please provide a corrected complete Python solution in one markdown block.
                 continue
             if sample_out_norm != expected_norm:
                 diff = "".join(difflib.unified_diff(expected_norm.splitlines(keepends=True), sample_out_norm.splitlines(keepends=True), fromfile='expected', tofile='actual'))
-                last_error = f"Sample mismatch. Diff:\\n{diff}\\nStdout:\\n{sample_run['stdout']}\\nStderr:\\n{sample_run['stderr']}"
+                last_error = f"Sample mismatch. Diff:\n{diff}\nStdout:\n{sample_run['stdout']}\nStderr:\n{sample_run['stderr']}"
                 continue
 
             # Success -> persist and return
@@ -402,7 +402,7 @@ async def test_solution(
     model = genai.GenerativeModel(MODEL_NAME)
 
     last_code = current_code
-    last_error = f"Initial run failed. stdout:\\n{run_res['stdout']}\\nstderr:\\n{run_res['stderr']}"
+    last_error = f"Initial run failed. stdout:\n{run_res['stdout']}\nstderr:\n{run_res['stderr']}"
 
     # Use available statement/sample context if present
     statement_text = (solution_dir / 'statement.txt').read_text(encoding='utf-8') if (solution_dir / 'statement.txt').exists() else (statement or "")
@@ -458,7 +458,7 @@ If a corrected solution is provided, reply with the full Python code in a single
                 continue
             if sample_out_norm != expected_norm:
                 diff = "".join(difflib.unified_diff(expected_norm.splitlines(keepends=True), sample_out_norm.splitlines(keepends=True), fromfile='expected', tofile='actual'))
-                last_error = f"Sample mismatch after regen. Diff:\\n{diff}\\nStdout:\\n{sample_run['stdout']}\\nStderr:\\n{sample_run['stderr']}"
+                last_error = f"Sample mismatch after regen. Diff:\n{diff}\nStdout:\n{sample_run['stdout']}\nStderr:\n{sample_run['stderr']}"
                 continue
 
         # Run candidate on test input
@@ -475,7 +475,7 @@ If a corrected solution is provided, reply with the full Python code in a single
             expected_test_norm = "\n".join(line.rstrip() for line in test_expected.strip().splitlines())
             if test_out_norm != expected_test_norm:
                 diff = "".join(difflib.unified_diff(expected_test_norm.splitlines(keepends=True), test_out_norm.splitlines(keepends=True), fromfile='expected_test', tofile='actual_test'))
-                last_error = f"Test mismatch after regen. Diff:\\n{diff}\\nStdout:\\n{test_run['stdout']}\\nStderr:\\n{test_run['stderr']}"
+                last_error = f"Test mismatch after regen. Diff:\n{diff}\nStdout:\n{test_run['stdout']}\nStderr:\n{test_run['stderr']}"
                 continue
         else:
             if test_out_norm == "":
