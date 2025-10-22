@@ -39,7 +39,7 @@ SOLUTIONS_DIR.mkdir(parents=True, exist_ok=True)
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.5-pro")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 MAX_GENERATION_ATTEMPTS = int(os.getenv("MAX_GENERATION_ATTEMPTS", "4"))
-EXECUTION_TIMEOUT = int(os.getenv("EXECUTION_TIMEOUT", "8"))  # seconds
+EXECUTION_TIMEOUT = int(os.getenv("EXECUTION_TIMEOUT", "60"))  # seconds
 
 ALLOWED_DOWNLOAD_FILES = {
     'coding_solution.py', 'test_output.txt', 'sample_stdout.txt',
