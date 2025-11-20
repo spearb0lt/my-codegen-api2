@@ -58,26 +58,18 @@ def extract_python_from_markdown(text: str) -> Optional[str]:
     # If there are common escape sequences like "\n" present in the raw text, try to decode them.
     # Use heuristics to avoid double-decoding proper text.
     try:
-    if "\\n" in text or "\\t" in text or '\\"' in text:
-        try:
-            decoded = bytes(text, "utf-8").decode("unicode_escape")
-            # prefer decoded if it yields at least as many real newlines
-            if decoded.count("\n") >= text.count("\n"):
-                text = decoded
-        except Exception:
-            pass
+        if "\\n" in text or "\\t" in text or '\\"' in text:
+            try:
+                decoded = bytes(text, "utf-8").decode("unicode_escape")
+                # prefer decoded if it yields at least as many real newlines
+                if decoded.count("\n") >= text.count("\n"):
+                    text = decoded
+            except Exception:
+                pass
     except Exception:
         pass
 
-ASCII_ART = """
 
-██████╗░██╗░░░░░███████╗░█████╗░░██████╗███████╗  ██╗░░██╗██╗██████╗░███████╗  ███╗░░░███╗███████╗
-██╔══██╗██║░░░░░██╔════╝██╔══██╗██╔════╝██╔════╝  ██║░░██║██║██╔══██╗██╔════╝  ████╗░████║██╔════╝
-██████╔╝██║░░░░░█████╗░░███████║╚█████╗░█████╗░░  ███████║██║██████╔╝█████╗░░  ██╔████╔██║█████╗░░
-██╔═══╝░██║░░░░░██╔══╝░░██╔══██║░╚═══██╗██╔══╝░░  ██╔══██║██║██╔══██╗██╔══╝░░  ██║╚██╔╝██║██╔══╝░░
-██║░░░░░███████╗███████╗██║░░██║██████╔╝███████╗  ██║░░██║██║██║░░██║███████╗  ██║░╚═╝░██║███████╗
-╚═╝░░░░░╚══════╝╚══════╝╚═╝░░╚═╝╚═════╝░╚══════╝  ╚═╝░░╚═╝╚═╝╚═╝░░╚═╝╚══════╝  ╚═╝░░░░░╚═╝╚══════╝
-"""
  
  # try:
     #     if ("\n" in text or "\t" in text or '\"' in text) and text.count("\n") > text.count("\n"):
@@ -101,6 +93,22 @@ ASCII_ART = """
     # Normalize line endings and strip outer whitespace/newlines
     code = code.replace("\r\n", "\n").replace("\r", "\n").strip("\n")
     return code
+
+
+
+ASCII_ART = """
+
+██████╗░██╗░░░░░███████╗░█████╗░░██████╗███████╗  ██╗░░██╗██╗██████╗░███████╗  ███╗░░░███╗███████╗
+██╔══██╗██║░░░░░██╔════╝██╔══██╗██╔════╝██╔════╝  ██║░░██║██║██╔══██╗██╔════╝  ████╗░████║██╔════╝
+██████╔╝██║░░░░░█████╗░░███████║╚█████╗░█████╗░░  ███████║██║██████╔╝█████╗░░  ██╔████╔██║█████╗░░
+██╔═══╝░██║░░░░░██╔══╝░░██╔══██║░╚═══██╗██╔══╝░░  ██╔══██║██║██╔══██╗██╔══╝░░  ██║╚██╔╝██║██╔══╝░░
+██║░░░░░███████╗███████╗██║░░██║██████╔╝███████╗  ██║░░██║██║██║░░██║███████╗  ██║░╚═╝░██║███████╗
+╚═╝░░░░░╚══════╝╚══════╝╚═╝░░╚═╝╚═════╝░╚══════╝  ╚═╝░░╚═╝╚═╝╚═╝░░╚═╝╚══════╝  ╚═╝░░░░░╚═╝╚══════╝
+"""
+
+
+
+
 
 def unpack_zip_to_dir(zip_bytes: bytes, dest_dir: Path) -> None:
     with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmpf:
@@ -950,16 +958,3 @@ def cleanup_solution(solution_id: str):
 
 # if __name__ == "__main__":
 #     main()
-
-
-
-
-
-
-
-
-
-
-
-
-
