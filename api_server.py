@@ -1,10 +1,11 @@
-# api_server_final.py
 """
-Robust Code-Gen Two-Step FastAPI server (final merge of v3+v4).
+Robust Code-Gen Two-Step FastAPI server (final merge).
 Features:
  - /health
  - /generate : upload problem ZIP (statement, sample_in, sample_out) -> LLM generates code until sample passes.
  - /test     : multiple modes including regeneration with LLM when test input fails.
+ - /test2    : JSON endpoint for client-local-run workflow (post stdout/stderr/timed_out etc)
+ - /cleanup  : delete saved solution artifacts
  - /download/{solution_id}/{filename} : download allowed artifacts
  - GET /solutions/{solution_id}/files : list saved files
  - GET /solutions : list existing solution_ids and file lists
@@ -12,6 +13,7 @@ Notes:
  - This server executes arbitrary Python code via subprocess. This is UNSAFE for untrusted inputs.
  - On ephemeral hosts (Render free tier) disk is not durable — download artifacts immediately client-side.
 """
+
 
 import os
 import shutil
@@ -56,14 +58,36 @@ def extract_python_from_markdown(text: str) -> Optional[str]:
     # If there are common escape sequences like "\n" present in the raw text, try to decode them.
     # Use heuristics to avoid double-decoding proper text.
     try:
-        if ("\n" in text or "\t" in text or '\"' in text) and text.count("\n") > text.count("\n"):
+    if "\\n" in text or "\\t" in text or '\\"' in text:
+        try:
             decoded = bytes(text, "utf-8").decode("unicode_escape")
-            # prefer decoded if it yields more real newlines
+            # prefer decoded if it yields at least as many real newlines
             if decoded.count("\n") >= text.count("\n"):
                 text = decoded
+        except Exception:
+            pass
     except Exception:
-        # fallback: leave text as-is
         pass
+
+ASCII_ART = """
+
+██████╗░██╗░░░░░███████╗░█████╗░░██████╗███████╗  ██╗░░██╗██╗██████╗░███████╗  ███╗░░░███╗███████╗
+██╔══██╗██║░░░░░██╔════╝██╔══██╗██╔════╝██╔════╝  ██║░░██║██║██╔══██╗██╔════╝  ████╗░████║██╔════╝
+██████╔╝██║░░░░░█████╗░░███████║╚█████╗░█████╗░░  ███████║██║██████╔╝█████╗░░  ██╔████╔██║█████╗░░
+██╔═══╝░██║░░░░░██╔══╝░░██╔══██║░╚═══██╗██╔══╝░░  ██╔══██║██║██╔══██╗██╔══╝░░  ██║╚██╔╝██║██╔══╝░░
+██║░░░░░███████╗███████╗██║░░██║██████╔╝███████╗  ██║░░██║██║██║░░██║███████╗  ██║░╚═╝░██║███████╗
+╚═╝░░░░░╚══════╝╚══════╝╚═╝░░╚═╝╚═════╝░╚══════╝  ╚═╝░░╚═╝╚═╝╚═╝░░╚═╝╚══════╝  ╚═╝░░░░░╚═╝╚══════╝
+"""
+ 
+ # try:
+    #     if ("\n" in text or "\t" in text or '\"' in text) and text.count("\n") > text.count("\n"):
+    #         decoded = bytes(text, "utf-8").decode("unicode_escape")
+    #         # prefer decoded if it yields more real newlines
+    #         if decoded.count("\n") >= text.count("\n"):
+    #             text = decoded
+    # except Exception:
+    #     # fallback: leave text as-is
+    #     pass
 
     # Try to extract fenced code block
     m = CODE_FENCE_RE.search(text)
@@ -152,7 +176,7 @@ def save_solution_on_server(solution_text: str, solution_dir: Path, metadata: Di
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model_configured": bool(GOOGLE_API_KEY)}
+    return {"note": ASCII_ART, "status": "ok", "model_configured": bool(GOOGLE_API_KEY)}
 
 @app.post("/generate")
 async def generate(file: UploadFile = File(...)):
@@ -200,9 +224,10 @@ Sample Input:
 
 Sample Output:
 {sample_out_text}
-
-Provide only the final Python code in a single markdown code block (```python ... ```).
+Keep in mind the constraints as mentioned in the statement and generate the most efficient and optimal code.
 """
+                # We might consider different algorithms, data structures, or computational techniques that could make our solution more efficient
+
             else:
                 prompt = f"""Previous submission produced incorrect output or runtime errors.
 
@@ -223,7 +248,7 @@ Sample Input:
 Expected Sample Output:
 {sample_out_text}
 
-Please provide a corrected complete Python solution in one markdown block.
+Keep in mind the constraints as mentioned in the statement and generate the most efficient and optimal code.
 """
             try:
                 resp = model.generate_content(prompt)
@@ -520,3 +545,421 @@ def list_solutions():
         if p.is_dir():
             ids.append({'solution_id': p.name, 'files': [f.name for f in p.iterdir() if f.is_file()]})
     return {'solutions': ids}
+
+
+
+
+
+
+# ------------------------------------------------------------
+
+
+
+### Chunk 4 — `/test2` (JSON client-run) — paste this after chunk 3
+# ```python
+# ---- New endpoint: POST /test2 (JSON) for client-local-run workflow ----
+@app.post("/test2")
+async def test2_endpoint_json(payload: Dict[str, Any] = Body(...)):
+    """
+    Accept JSON from local runner. Fields:
+      - solution_id (optional if 'solution' provided)
+      - solution (optional code text to save)
+      - stdout, stderr, timed_out (bool), returncode, test_input (string), test_expected (optional)
+    Behavior:
+      - Save run output to solution dir
+      - If successful locally -> return ok
+      - If failed -> call LLM (same regeneration flow as /test) and return regenerated candidate
+    """
+    data = payload or {}
+    solution_id = data.get("solution_id")
+    provided_solution_text = data.get("solution")
+    stdout = data.get("stdout", "") or ""
+    stderr = data.get("stderr", "") or ""
+    timed_out = bool(data.get("timed_out", False))
+    returncode = data.get("returncode", None)
+    test_input_text = data.get("test_input", "") or ""
+    test_expected = data.get("test_expected", None)
+
+    # validation
+    if not solution_id and not provided_solution_text:
+        raise HTTPException(status_code=400, detail="Either solution_id or solution (code text) must be provided")
+
+    # create or get solution dir
+    created_new = False
+    if provided_solution_text and not solution_id:
+        solution_id = str(uuid.uuid4())
+        created_new = True
+        solution_dir = SOLUTIONS_DIR / solution_id
+        solution_dir.mkdir(parents=True, exist_ok=True)
+        code_text = extract_python_from_markdown(provided_solution_text) or provided_solution_text
+        save_solution_on_server(code_text, solution_dir, {"solution_id": solution_id, "provided_via_post": True})
+    else:
+        solution_dir = SOLUTIONS_DIR / solution_id
+        if not solution_dir.exists():
+            raise HTTPException(status_code=404, detail="solution_id not found")
+
+    coding_path = solution_dir / "coding_solution.py"
+    if not coding_path.exists() and not provided_solution_text:
+        raise HTTPException(status_code=404, detail="coding_solution.py not found for this solution_id")
+
+    # save run output
+    try:
+        (solution_dir / "test_output.txt").write_text(stdout + "\n[stderr]\n" + stderr, encoding="utf-8")
+        if test_input_text:
+            (solution_dir / "latest_test_input.txt").write_text(test_input_text, encoding="utf-8")
+    except Exception:
+        pass
+
+    def _normalize_out(s: str) -> str:
+        return "\n".join(line.rstrip() for line in s.strip().splitlines())
+
+    # If client already reports success, return ok immediately (server won't re-run)
+    if (not timed_out) and stderr.strip() == "" and (test_expected is None or _normalize_out(stdout) == _normalize_out(test_expected)):
+        return JSONResponse({"status": "ok", "solution_id": solution_id, "test_stdout": stdout, "test_stderr": stderr})
+
+    # Otherwise we need to attempt regeneration using the LLM (same logic as /test)
+
+    last_code = coding_path.read_text(encoding="utf-8") if coding_path.exists() else (provided_solution_text or "")
+    last_error = f"Local run failed. timed_out={timed_out}\nreturncode={returncode}\nstderr:\n{stderr}\nstdout:\n{stdout}"
+
+    # sample/statement context if available
+    statement_text = (solution_dir / 'statement.txt').read_text(encoding='utf-8') if (solution_dir / 'statement.txt').exists() else ""
+    sample_in_text = (solution_dir / 'sample_in.txt').read_text(encoding='utf-8') if (solution_dir / 'sample_in.txt').exists() else ""
+    sample_out_text = (solution_dir / 'sample_out.txt').read_text(encoding='utf-8') if (solution_dir / 'sample_out.txt').exists() else ""
+
+    # If no LLM available, return failure
+    if not GOOGLE_API_KEY:
+        (solution_dir / "metadata.json").write_text(json.dumps({"solution_id": solution_id, "last_error": last_error, "timestamp": time.time()}), encoding="utf-8")
+        return JSONResponse({"status": "failed", "reason": "no_google_api_key", "last_error": last_error}, status_code=400)
+
+    try:
+        import google.generativeai as genai
+    except Exception as e:
+        return JSONResponse({"status": "failed", "reason": f"missing_llm_lib: {e}", "last_error": last_error}, status_code=500)
+
+    genai.configure(api_key=GOOGLE_API_KEY)
+    model = genai.GenerativeModel(MODEL_NAME)
+
+    raw_llm_text = None
+    last_solution = None
+
+    for attempt in range(1, MAX_GENERATION_ATTEMPTS + 1):
+        prompt = f"""You are an expert competitive programmer. Previously the following solution was produced for the problem statement below. It passed the sample tests but it failed when run locally. Please provide a corrected complete Python 3 solution that (1) still passes the provided sample input/output and (2) runs correctly on the failing test input.
+
+Problem statement:
+{statement_text}
+
+Sample Input:
+{sample_in_text}
+
+Sample Output:
+{sample_out_text}
+
+Previous code:
+{last_code}
+
+Failure when running on this test input:
+Test Input:
+{test_input_text}
+
+Failure details:
+{last_error}
+
+If a corrected solution is provided, reply with the full Python code in a single markdown code block (```python ... ```).
+"""
+        try:
+            resp = model.generate_content(prompt)
+        except Exception as e:
+            last_error = f"LLM call failed: {e}"
+            continue
+
+        raw_llm_text = getattr(resp, "text", str(resp)) or ""
+        code_candidate = extract_python_from_markdown(raw_llm_text) or (raw_llm_text or "").strip()
+        last_solution = code_candidate
+
+        # validate sample tests if present
+        if sample_in_text and sample_out_text:
+            sample_run = run_python_code_str(code_candidate, sample_in_text, timeout=EXECUTION_TIMEOUT)
+            sample_out_norm = "\n".join(line.rstrip() for line in sample_run["stdout"].strip().splitlines())
+            expected_norm = "\n".join(line.rstrip() for line in sample_out_text.strip().splitlines())
+            if sample_run["timed_out"]:
+                last_error = f"Sample run timed out after regen: {sample_run['stderr']}"
+                continue
+            if sample_run["stderr"]:
+                last_error = f"Sample runtime error after regen: {sample_run['stderr']}"
+                continue
+            if sample_out_norm != expected_norm:
+                diff = "".join(difflib.unified_diff(expected_norm.splitlines(keepends=True), sample_out_norm.splitlines(keepends=True), fromfile='expected', tofile='actual'))
+                last_error = f"Sample mismatch after regen. Diff:\n{diff}\nStdout:\n{sample_run['stdout']}\nStderr:\n{sample_run['stderr']}"
+                continue
+
+        # run candidate on the failing test input posted by client (if provided)
+        test_run = run_python_code_str(code_candidate, test_input_text, timeout=EXECUTION_TIMEOUT)
+        test_out_norm = "\n".join(line.rstrip() for line in test_run["stdout"].strip().splitlines())
+
+        if test_run["timed_out"]:
+            last_error = f"Test run timed out: {test_run['stderr']}"
+            continue
+        if test_run["stderr"]:
+            last_error = f"Test runtime error after regen: {test_run['stderr']}"
+            continue
+        if test_expected is not None:
+            expected_test_norm = "\n".join(line.rstrip() for line in test_expected.strip().splitlines())
+            if test_out_norm != expected_test_norm:
+                diff = "".join(difflib.unified_diff(expected_test_norm.splitlines(keepends=True), test_out_norm.splitlines(keepends=True), fromfile='expected_test', tofile='actual_test'))
+                last_error = f"Test mismatch after regen. Diff:\n{diff}\nStdout:\n{test_run['stdout']}\nStderr:\n{test_run['stderr']}"
+                continue
+        else:
+            if test_out_norm == "":
+                last_error = "Test run produced empty stdout after regen."
+                continue
+
+        # success - persist candidate and return regeneration response
+        try:
+            coding_path.write_text(code_candidate, encoding='utf-8')
+            (solution_dir / 'test_output.txt').write_text(test_run['stdout'], encoding='utf-8')
+            (solution_dir / 'llm_response.txt').write_text(raw_llm_text, encoding='utf-8')
+            (solution_dir / 'metadata.json').write_text(json.dumps({"solution_id": solution_id, "regenerated_attempt": attempt, "timestamp": time.time()}), encoding='utf-8')
+        except Exception:
+            pass
+
+        return JSONResponse({"status": "regenerated", "solution_id": solution_id, "candidate_solution": code_candidate, "raw_llm_text": raw_llm_text, "attempts": attempt})
+
+    # exhausted all regen attempts
+    return JSONResponse({"status": "failed", "reason": "regeneration_exhausted", "last_error": last_error, "last_solution": last_solution, "raw_llm_text": raw_llm_text}, status_code=400)
+
+
+
+@app.delete("/cleanup/{solution_id}")
+def cleanup_solution(solution_id: str):
+    """
+    Remove solution artifacts for solution_id from server storage.
+    Deletes the directory SOLUTIONS_DIR/<solution_id> and its contents.
+    """
+    solution_dir = (SOLUTIONS_DIR / solution_id).resolve()
+    base = SOLUTIONS_DIR.resolve()
+
+    # Safety: ensure deletion target is inside SOLUTIONS_DIR
+    if not str(solution_dir).startswith(str(base) + os.sep) and solution_dir != base:
+        raise HTTPException(status_code=400, detail="Invalid solution_id / path")
+
+    if not solution_dir.exists():
+        raise HTTPException(status_code=404, detail="solution_id not found")
+
+    try:
+        shutil.rmtree(solution_dir)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to remove solution files: {e}")
+
+    return JSONResponse({"status": "ok", "solution_id": solution_id, "message": "solution files removed"})
+
+
+
+##HELPER SCRIPT
+
+#!/usr/bin/env python3
+"""
+# test2_automate_nonimage_post_on_error.py
+
+# Run a locally available generated program against a test input. If it fails (stderr, non-zero return code,
+# or timeout), POST the run result to the server's non-image /test2 endpoint so the server can attempt LLM
+# regeneration. If the server returns a regenerated candidate, overwrite the local program and retry (up to max-iters).
+
+# Usage examples:
+
+# # Use an existing solution_id on server, run local program or download it first:
+# python test2_automate_nonimage_post_on_error.py \
+#   --server https://my-api-mneh.onrender.com \
+#   --solution-id <SOLUTION_ID> \
+#   --test-file pp_input.txt \
+#   --program-filename coding_solution.py
+
+# # Upload a local program and test it locally; only post to server on failure and include local program in POST:
+# python test2_automate_nonimage_post_on_error.py \
+#   --server https://my-api-mneh.onrender.com \
+#   --solution-file a.py \
+#   --test-file pp_input.txt \
+#   --upload-local-program
+
+# # Provide test input string instead of file:
+# python test2_automate_nonimage_post_on_error.py \
+#   --server https://my-api-mneh.onrender.com \
+#   --solution-file a.py \
+#   --test-input "1 2 3\n" \
+#   --upload-local-program
+
+# """
+
+# import argparse
+# import requests
+# import sys
+# import shutil
+# import subprocess
+# import time
+# from pathlib import Path
+
+# DOWNLOAD_TIMEOUT = 60
+# DEFAULT_MAX_ITERS = 4
+# DEFAULT_TIMEOUT = 60
+
+# def download_program(server, solution_id, program_filename, out_path):
+#     url = server.rstrip('/') + f'/download/{solution_id}/{program_filename}'
+#     r = requests.get(url, stream=True, timeout=DOWNLOAD_TIMEOUT)
+#     r.raise_for_status()
+#     with open(out_path, 'wb') as f:
+#         shutil.copyfileobj(r.raw, f)
+#     return out_path
+
+# def run_program_locally(python_exe, program_path, test_input_path, time_limit):
+#     """
+#     Run program_path using python_exe with test_input_path as stdin.
+#     Returns dict {stdout, stderr, timed_out, returncode}
+#     """
+#     try:
+#         with open(test_input_path, 'r', encoding='utf-8') as inf:
+#             p = subprocess.run([python_exe, str(program_path)],
+#                                stdin=inf, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+#                                text=True, timeout=time_limit)
+#             return {"stdout": p.stdout or "", "stderr": p.stderr or "", "timed_out": False, "returncode": p.returncode}
+#     except subprocess.TimeoutExpired:
+#         return {"stdout": "", "stderr": f"Time Limit Exceeded ({time_limit} seconds)", "timed_out": True, "returncode": None}
+#     except Exception as e:
+#         return {"stdout": "", "stderr": f"Local runner exception: {repr(e)}", "timed_out": False, "returncode": None}
+
+# def post_result(server, payload):
+#     url = server.rstrip('/') + '/test2'
+#     r = requests.post(url, json=payload, timeout=DOWNLOAD_TIMEOUT)
+#     r.raise_for_status()
+#     return r.json()
+
+# def main():
+#     p = argparse.ArgumentParser()
+#     p.add_argument('--server', required=True, help='Base URL of the server (example: https://my-api-mneh.onrender.com)')
+#     p.add_argument('--solution-id', help='Existing solution_id on the server (optional)')
+#     p.add_argument('--solution-file', help='Local solution code file to use (optional)')
+#     p.add_argument('--test-file', help='Local test input file (required unless --test-input is provided)')
+#     p.add_argument('--test-input', help='Direct test input string (alternative to --test-file)')
+#     p.add_argument('--program-filename', default='coding_solution.py', help='Name to save or use for the program file locally')
+#     p.add_argument('--python-exe', default=sys.executable, help='Python executable to run locally')
+#     p.add_argument('--max-iters', type=int, default=DEFAULT_MAX_ITERS)
+#     p.add_argument('--time-limit', type=int, default=DEFAULT_TIMEOUT)
+#     p.add_argument('--upload-local-program', action='store_true', help='When posting failure to server, include the local program source in payload["solution"]')
+#     args = p.parse_args()
+
+#     if not args.test_file and args.test_input is None:
+#         print("Either --test-file or --test-input must be provided.", file=sys.stderr)
+#         sys.exit(2)
+
+#     # Acquire program locally
+#     local_program_path = None
+#     if args.solution_file:
+#         local_program_path = Path(args.solution_file)
+#         if not local_program_path.exists():
+#             print("solution_file not found:", local_program_path, file=sys.stderr)
+#             sys.exit(2)
+#     elif args.solution_id:
+#         # try to download the program from server
+#         try:
+#             print("Downloading program from server...")
+#             download_program(args.server, args.solution_id, args.program_filename, Path(args.program_filename))
+#             local_program_path = Path(args.program_filename)
+#             print("Downloaded program to", local_program_path)
+#         except Exception as e:
+#             print("Failed to download program:", e, file=sys.stderr)
+#             print("Provide --solution-file if you have a local copy.", file=sys.stderr)
+#             sys.exit(1)
+#     else:
+#         print("Provide either --solution-file or --solution-id to obtain a program to run.", file=sys.stderr)
+#         sys.exit(2)
+
+#     # Prepare test input file locally
+#     if args.test_file:
+#         local_test_input = Path(args.test_file)
+#         if not local_test_input.exists():
+#             print("test file not found:", local_test_input, file=sys.stderr)
+#             sys.exit(2)
+#     else:
+#         local_test_input = Path('test_input_temp.txt')
+#         local_test_input.write_text(args.test_input or '', encoding='utf-8')
+
+#     python_exe = args.python_exe
+#     max_iters = args.max_iters
+#     time_limit = args.time_limit
+
+#     for attempt in range(1, max_iters + 1):
+#         print(f"\n=== ITERATION {attempt}/{max_iters} ===")
+#         run_res = run_program_locally(python_exe, local_program_path, local_test_input, time_limit)
+#         stdout = run_res['stdout']
+#         stderr = run_res['stderr']
+#         timed_out = run_res['timed_out']
+#         returncode = run_res['returncode']
+
+#         # Save latest local run logs for debug
+#         Path('latest_run_stdout.txt').write_text(stdout or '', encoding='utf-8')
+#         Path('latest_run_stderr.txt').write_text(stderr or '', encoding='utf-8')
+
+#         # Determine local success: no stderr, not timed out, and returncode==0 (or None treated as success only if no stderr)
+#         success = (not timed_out) and (not stderr.strip()) and (returncode == 0 or returncode is None)
+#         if success:
+#             print("✅ Local run successful. No server contact required. Exiting.")
+#             sys.exit(0)
+
+#         # Otherwise, prepare payload and POST to server /test2 for regeneration
+#         payload = {
+#             'solution_id': args.solution_id,
+#             'stdout': stdout or '',
+#             'stderr': stderr or '',
+#             'timed_out': bool(timed_out),
+#             'returncode': returncode,
+#             'test_input': local_test_input.read_text(encoding='utf-8')
+#         }
+#         if args.upload_local_program:
+#             payload['solution'] = local_program_path.read_text(encoding='utf-8')
+
+#         print("Posting failure to server /test2 for regeneration...")
+#         try:
+#             server_resp = post_result(args.server, payload)
+#         except Exception as e:
+#             print("Failed to post to server:", e, file=sys.stderr)
+#             sys.exit(1)
+
+#         # Interpret server response
+#         status = server_resp.get('status')
+#         if status == 'regenerated':
+#             # Server provided a candidate solution to try locally
+#             candidate = server_resp.get('candidate_solution') or server_resp.get('solution') or server_resp.get('candidate') or server_resp.get('raw_llm_text')
+#             if not candidate:
+#                 print("Server declared regeneration but did not return candidate code. Response:", server_resp, file=sys.stderr)
+#                 sys.exit(1)
+#             print("Received regenerated candidate from server. Overwriting local program and retrying...")
+#             local_program_path.write_text(candidate, encoding='utf-8')
+#             # If server returned a new solution_id, update it
+#             if 'solution_id' in server_resp:
+#                 args.solution_id = server_resp['solution_id']
+#             # loop will rerun
+#             continue
+#         elif status == 'ok':
+#             print("Server responded OK (candidate verified server-side). Exiting.")
+#             sys.exit(0)
+#         else:
+#             print("Server returned failure or unexpected response. Response:", server_resp, file=sys.stderr)
+#             sys.exit(1)
+
+#     print("Reached maximum iterations without success.")
+#     sys.exit(2)
+
+# if __name__ == "__main__":
+#     main()
+
+
+
+
+
+
+
+
+
+
+
+
+
