@@ -421,7 +421,8 @@ def health():
 
 
 @app.post("/generate")
-async def generate(file: UploadFile = File(...)):
+# async def generate(file: UploadFile = File(...)):
+async def generate(file: UploadFile = File(...), check: bool = Form(True)):
     if not GOOGLE_API_KEY:
         raise HTTPException(status_code=500, detail="Server missing GOOGLE_API_KEY env var for generation.")
 
@@ -675,7 +676,7 @@ Please provide a corrected most optimized and complete Python solution in one ma
             if sample_run["stderr"]:
                 last_error = sample_run["stderr"]
                 continue
-            if out_norm == expected_norm:
+            if ((out_norm == expected_norm) and check) or not check:
                 # success -> persist artifacts
                 solution_id = str(uuid.uuid4())
                 solution_dir = SOLUTIONS_DIR / solution_id
@@ -747,7 +748,8 @@ async def test_solution(
     statement: Optional[str] = Form(None),
     sample_in: Optional[str] = Form(None),
     sample_out: Optional[str] = Form(None),
-    test_expected: Optional[str] = Form(None)
+    test_expected: Optional[str] = Form(None),
+    check: bool = Form(True)
 ):
     if test_file is None and test_input is None:
         raise HTTPException(status_code=400, detail='Provide test_file or test_input.')
@@ -798,7 +800,7 @@ async def test_solution(
     def normalize_out(s: str) -> str:
         return '\n'.join(line.rstrip() for line in s.strip().splitlines())
 
-    if not run_res['timed_out'] and run_res['stderr'] == '' and (test_expected is None or normalize_out(run_res['stdout']) == normalize_out(test_expected)):
+    if not run_res['timed_out'] and run_res['stderr'] == '' and (test_expected is None or (not check) or normalize_out(run_res['stdout']) == normalize_out(test_expected)):
         (solution_dir / 'test_output.txt').write_text(run_res['stdout'], encoding='utf-8')
         return JSONResponse({'status': 'ok', 'solution_id': solution_id, 'test_stdout': run_res['stdout'], 'test_stderr': run_res['stderr'], 'test_output_path': str(solution_dir / 'test_output.txt'), 'solution': current_code})
 
@@ -908,7 +910,7 @@ If a corrected solution is provided, reply with the full Python code in a single
                 last_error = f"Sample run timed out: {sample_run['stderr']}"; continue
             if sample_run['stderr']:
                 last_error = f"Sample runtime error after regen: {sample_run['stderr']}"; continue
-            if sample_out_norm != expected_norm:
+            if check and sample_out_norm != expected_norm:
                 diff = ''.join(difflib.unified_diff(expected_norm.splitlines(keepends=True), sample_out_norm.splitlines(keepends=True), fromfile='expected', tofile='actual'))
                 last_error = f"Sample mismatch after regen. Diff:\n{diff}\nStdout:\n{sample_run['stdout']}\nStderr:\n{sample_run['stderr']}"; continue
 
