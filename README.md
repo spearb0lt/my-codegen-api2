@@ -1,4 +1,5 @@
-# CodeGen API
+# This was the initial prototype API I had developed. Please see the main branch for current one
+
 
 FastAPI server to convert problem zip -> generated solution / run-only execution.
 Set env var GOOGLE_API_KEY to enable LLM calls.
