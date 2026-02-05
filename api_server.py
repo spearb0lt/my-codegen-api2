@@ -500,7 +500,7 @@ async def generate(file: UploadFile = File(...), check: bool = Form(True)):
 
         # Import and configure LLM client
         try:
-            import google.generativeai as genai
+            import google.genai as genai
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Missing LLM client library: {e}")
 
@@ -810,7 +810,7 @@ async def test_solution(
         return JSONResponse({'status': 'failed', 'reason': 'no_google_api_key', 'run_result': run_res, 'solution': current_code}, status_code=400)
 
     try:
-        import google.generativeai as genai
+        import google.genai as genai
     except Exception as e:
         return JSONResponse({'status': 'failed', 'reason': f'missing_llm_lib: {e}', 'run_result': run_res, 'solution': current_code}, status_code=500)
     genai.configure(api_key=GOOGLE_API_KEY); model = genai.GenerativeModel(MODEL_NAME)
@@ -1199,7 +1199,7 @@ async def test2_endpoint_json(payload: Dict[str, Any]):
         return JSONResponse({"status": "failed", "reason": "no_google_api_key", "last_error": last_error}, status_code=400)
 
     try:
-        import google.generativeai as genai
+        import google.genai as genai
     except Exception as e:
         return JSONResponse({"status": "failed", "reason": f"missing_llm_lib: {e}", "last_error": last_error}, status_code=500)
 
