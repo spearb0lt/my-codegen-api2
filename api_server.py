@@ -593,7 +593,8 @@ Please provide a corrected most optimized and complete Python solution in one ma
                 mapping_text = ("\n-- Image mapping (attachment order) --\n" + "\n".join(mapping_lines)) if mapping_lines else ""
                 prompt_with_map = prompt + ("\n\n" + mapping_text if mapping_text else "")
                 try:
-                    resp = model.generate_content(prompt_with_map)
+                    # resp = model.generate_content(prompt_with_map) //old api end
+                    resp = client.models.generate_content(model=MODEL_NAME, contents=prompt_with_map)
                 except Exception as e:
                     # cannot proceed further (avoid passing unknown kwargs)
                     raise HTTPException(status_code=500, detail=f"LLM generate_content failed: {e}; multimodal_errors: {multimodal_errors}")
@@ -900,7 +901,9 @@ If a corrected solution is provided, reply with the full Python code in a single
             if image_urls: image_map_text += '\nImage URLs:\n' + '\n'.join(image_urls)
             if image_map_text: prompt_text = prompt_text + '\n\n' + image_map_text
             try:
-                resp = model.generate_content(prompt_text)
+                # resp = model.generate_content(prompt_text)//old api
+                resp = client.models.generate_content(model=MODEL_NAME, contents=prompt_with_map)
+
             except Exception as e:
                 return JSONResponse({'status': 'failed', 'reason': f'LLM_call_failed: {e}', 'run_result': run_res, 'solution': current_code}, status_code=500)
 
@@ -1297,7 +1300,9 @@ If a corrected solution is provided, reply with the full Python code in a single
             mapping_text = ("\n-- Image mapping (attachment order) --\n" + "\n".join(image_map_lines)) if image_map_lines else ""
             prompt_with_map = prompt + ("\n\n" + mapping_text if mapping_text else "")
             try:
-                resp = model.generate_content(prompt_with_map)
+                # resp = model.generate_content(prompt_with_map)//oldapi
+                resp = client.models.generate_content(model=MODEL_NAME, contents=prompt_with_map)
+
                 raw_llm_text = getattr(resp, "text", str(resp)) or ""
             except Exception as e:
                 attempt_errors.append(f"text-only generate failed: {repr(e)}")
