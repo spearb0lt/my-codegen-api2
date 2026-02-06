@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from typing import Optional, Dict, Any, List, Tuple
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
-from google import genai
+import google.genai as genai
 import traceback
 import time, io
 from typing import Tuple, Optional
