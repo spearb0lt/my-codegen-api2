@@ -507,8 +507,11 @@ async def generate(file: UploadFile = File(...), check: bool = Form(True)):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Missing LLM client library: {e}")
 
-        genai.configure(api_key=GOOGLE_API_KEY)
-        model = genai.GenerativeModel(MODEL_NAME)
+        # genai.configure(api_key=GOOGLE_API_KEY)
+        # model = genai.GenerativeModel(MODEL_NAME)
+        import google.genai as genai
+        client = genai.Client(api_key=GOOGLE_API_KEY)
+
 
         last_code = None
         last_error = ""
