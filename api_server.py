@@ -425,6 +425,7 @@ def health():
 async def generate(file: UploadFile = File(...), check: bool = Form(True)):
     if not GOOGLE_API_KEY:
         raise HTTPException(status_code=500, detail="Server missing GOOGLE_API_KEY env var for generation.")
+    client = genai.Client(api_key=GOOGLE_API_KEY)
 
     tmp_root = Path(tempfile.mkdtemp(prefix="gen_"))
     try:
