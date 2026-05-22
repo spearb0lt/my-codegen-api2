@@ -656,7 +656,10 @@ Please provide a corrected most optimized and complete Python solution in one ma
             # Save attempt errors into multimodal_errors for diagnostics
             # multimodal_errors.extend(attempt_multimodal_errors)
     
-            raw_llm_text = getattr(resp, "text", str(resp)) or ""
+            try:
+                raw_llm_text = resp.text or ""
+            except (ValueError, AttributeError) as _text_err:
+                raw_llm_text = str(resp)
             code_candidate = extract_python_from_markdown(raw_llm_text) or raw_llm_text.strip()
             last_code = code_candidate
     
@@ -873,9 +876,10 @@ If a corrected solution is provided, reply with the full Python code in a single
         #                 resp = model.generate_content(prompt_text, images=image_bytes)
         #         except Exception:
         #             pass
-        if pil_images or image_urls or photo_placeholders:
-            prompt_text += "\nI will also prov/ide you the images in same order as that of their occurance. Make sure gather sufficient insights from them and approach the problem."
+        if image_urls or downloaded_local_paths or photo_placeholders:
+            prompt_text += "\nI will also provide you the images in same order as that of their occurrence. Make sure gather sufficient insights from them and approach the problem."
   
+        resp = None
         if resp is None:
             image_map_text = ''
             if photo_placeholders:
@@ -894,7 +898,10 @@ If a corrected solution is provided, reply with the full Python code in a single
             except Exception as e:
                 return JSONResponse({'status': 'failed', 'reason': f'LLM_call_failed: {e}', 'run_result': run_res, 'solution': current_code}, status_code=500)
 
-        raw_llm_text = getattr(resp, 'text', str(resp)) or ""
+        try:
+            raw_llm_text = resp.text or ""
+        except (ValueError, AttributeError) as _text_err:
+            raw_llm_text = str(resp)
         code_candidate = extract_python_from_markdown(raw_llm_text) or (raw_llm_text or "").strip()
         last_code = code_candidate
 
@@ -1287,7 +1294,10 @@ If a corrected solution is provided, reply with the full Python code in a single
             prompt_with_map = prompt + ("\n\n" + mapping_text if mapping_text else "")
             try:
                 resp = client.models.generate_content(model=MODEL_NAME, contents=prompt_with_map)
-                raw_llm_text = getattr(resp, "text", str(resp)) or ""
+                try:
+                    raw_llm_text = resp.text or ""
+                except (ValueError, AttributeError):
+                    raw_llm_text = str(resp)
             except Exception as e:
                 attempt_errors.append(f"text-only generate failed: {repr(e)}")
                 resp = None
