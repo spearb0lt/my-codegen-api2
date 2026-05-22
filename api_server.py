@@ -15,6 +15,7 @@ from typing import Optional, Dict, Any, List, Tuple
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
 import google.genai as genai
+from google.genai import types as genai_types
 import traceback
 import time, io
 from typing import Tuple, Optional
@@ -39,7 +40,7 @@ except Exception:
 SOLUTIONS_DIR = Path(os.getenv("SOLUTIONS_DIR", "solutions"))
 SOLUTIONS_DIR.mkdir(parents=True, exist_ok=True)
 
-MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.5-pro")
+MODEL_NAME = os.getenv("MODEL_NAME", "gemini-3.5-flash")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 MAX_GENERATION_ATTEMPTS = int(os.getenv("MAX_GENERATION_ATTEMPTS", "4"))
 EXECUTION_TIMEOUT = int(os.getenv("EXECUTION_TIMEOUT", "300"))
@@ -582,7 +583,13 @@ Please provide a corrected most optimized and complete Python solution in one ma
                 mapping_text = ("\n-- Image mapping (attachment order) --\n" + "\n".join(mapping_lines)) if mapping_lines else ""
                 prompt_with_map = prompt + ("\n\n" + mapping_text if mapping_text else "")
                 try:
-                    resp = client.models.generate_content(model=MODEL_NAME, contents=prompt_with_map)
+                    resp = client.models.generate_content(
+                        model=MODEL_NAME,
+                        contents=prompt_with_map,
+                        config=genai_types.GenerateContentConfig(
+                            thinking_config=genai_types.ThinkingConfig(thinking_level="high")
+                        )
+                    )
                 except Exception as e:
                     # cannot proceed further (avoid passing unknown kwargs)
                     raise HTTPException(status_code=500, detail=f"LLM generate_content failed: {e}; multimodal_errors: {multimodal_errors}")
@@ -656,10 +663,7 @@ Please provide a corrected most optimized and complete Python solution in one ma
             # Save attempt errors into multimodal_errors for diagnostics
             # multimodal_errors.extend(attempt_multimodal_errors)
     
-            try:
-                raw_llm_text = resp.text or ""
-            except (ValueError, AttributeError) as _text_err:
-                raw_llm_text = str(resp)
+            raw_llm_text = getattr(resp, "text", str(resp)) or ""
             code_candidate = extract_python_from_markdown(raw_llm_text) or raw_llm_text.strip()
             last_code = code_candidate
     
@@ -876,10 +880,9 @@ If a corrected solution is provided, reply with the full Python code in a single
         #                 resp = model.generate_content(prompt_text, images=image_bytes)
         #         except Exception:
         #             pass
-        if image_urls or downloaded_local_paths or photo_placeholders:
-            prompt_text += "\nI will also provide you the images in same order as that of their occurrence. Make sure gather sufficient insights from them and approach the problem."
+        if pil_images or image_urls or photo_placeholders:
+            prompt_text += "\nI will also prov/ide you the images in same order as that of their occurance. Make sure gather sufficient insights from them and approach the problem."
   
-        resp = None
         if resp is None:
             image_map_text = ''
             if photo_placeholders:
@@ -893,15 +896,18 @@ If a corrected solution is provided, reply with the full Python code in a single
             if image_urls: image_map_text += '\nImage URLs:\n' + '\n'.join(image_urls)
             if image_map_text: prompt_text = prompt_text + '\n\n' + image_map_text
             try:
-                resp = client.models.generate_content(model=MODEL_NAME, contents=prompt_text)
+                resp = client.models.generate_content(
+                    model=MODEL_NAME,
+                    contents=prompt_text,
+                    config=genai_types.GenerateContentConfig(
+                        thinking_config=genai_types.ThinkingConfig(thinking_level="high")
+                    )
+                )
 
             except Exception as e:
                 return JSONResponse({'status': 'failed', 'reason': f'LLM_call_failed: {e}', 'run_result': run_res, 'solution': current_code}, status_code=500)
 
-        try:
-            raw_llm_text = resp.text or ""
-        except (ValueError, AttributeError) as _text_err:
-            raw_llm_text = str(resp)
+        raw_llm_text = getattr(resp, 'text', str(resp)) or ""
         code_candidate = extract_python_from_markdown(raw_llm_text) or (raw_llm_text or "").strip()
         last_code = code_candidate
 
@@ -1293,11 +1299,14 @@ If a corrected solution is provided, reply with the full Python code in a single
             mapping_text = ("\n-- Image mapping (attachment order) --\n" + "\n".join(image_map_lines)) if image_map_lines else ""
             prompt_with_map = prompt + ("\n\n" + mapping_text if mapping_text else "")
             try:
-                resp = client.models.generate_content(model=MODEL_NAME, contents=prompt_with_map)
-                try:
-                    raw_llm_text = resp.text or ""
-                except (ValueError, AttributeError):
-                    raw_llm_text = str(resp)
+                resp = client.models.generate_content(
+                    model=MODEL_NAME,
+                    contents=prompt_with_map,
+                    config=genai_types.GenerateContentConfig(
+                        thinking_config=genai_types.ThinkingConfig(thinking_level="high")
+                    )
+                )
+                raw_llm_text = getattr(resp, "text", str(resp)) or ""
             except Exception as e:
                 attempt_errors.append(f"text-only generate failed: {repr(e)}")
                 resp = None
