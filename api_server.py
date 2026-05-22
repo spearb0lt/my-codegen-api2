@@ -179,9 +179,9 @@ def fetch_image_as_pil(url: str, timeout: int = 10, max_tries: int = 3) -> Tuple
                 # disable environment proxies if that helps: s.trust_env = False
                 s.headers.update(headers)
                 resp = s.get(url, timeout=timeout, allow_redirects=True, stream=True)
-                status = resp.status_code
-                if status != 200:
-                    last_exc = f"HTTP {status}"
+                http_status = resp.status_code
+                if http_status != 200:
+                    last_exc = f"HTTP {http_status}"
                     time.sleep(0.5 * attempt)
                     continue
                 ctype = resp.headers.get("Content-Type", "")
@@ -501,17 +501,6 @@ async def generate(file: UploadFile = File(...), check: bool = Form(True)):
 
         # ----- End image collection -----
 
-        # Import and configure LLM client
-        try:
-            import google.genai as genai
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Missing LLM client library: {e}")
-
-        # genai.configure(api_key=GOOGLE_API_KEY)
-        # model = genai.GenerativeModel(MODEL_NAME)
-        import google.genai as genai
-        client = genai.Client(api_key=GOOGLE_API_KEY)
-
 
         last_code = None
         last_error = ""
@@ -593,7 +582,6 @@ Please provide a corrected most optimized and complete Python solution in one ma
                 mapping_text = ("\n-- Image mapping (attachment order) --\n" + "\n".join(mapping_lines)) if mapping_lines else ""
                 prompt_with_map = prompt + ("\n\n" + mapping_text if mapping_text else "")
                 try:
-                    # resp = model.generate_content(prompt_with_map) //old api end
                     resp = client.models.generate_content(model=MODEL_NAME, contents=prompt_with_map)
                 except Exception as e:
                     # cannot proceed further (avoid passing unknown kwargs)
@@ -820,7 +808,7 @@ async def test_solution(
         import google.genai as genai
     except Exception as e:
         return JSONResponse({'status': 'failed', 'reason': f'missing_llm_lib: {e}', 'run_result': run_res, 'solution': current_code}, status_code=500)
-    genai.configure(api_key=GOOGLE_API_KEY); model = genai.GenerativeModel(MODEL_NAME)
+    client = genai.Client(api_key=GOOGLE_API_KEY)
 
     last_code = current_code; last_error = f"Initial run failed. stdout:\n{run_res['stdout']}\nstderr:\n{run_res['stderr']}"
 
@@ -901,8 +889,7 @@ If a corrected solution is provided, reply with the full Python code in a single
             if image_urls: image_map_text += '\nImage URLs:\n' + '\n'.join(image_urls)
             if image_map_text: prompt_text = prompt_text + '\n\n' + image_map_text
             try:
-                # resp = model.generate_content(prompt_text)//old api
-                resp = client.models.generate_content(model=MODEL_NAME, contents=prompt_with_map)
+                resp = client.models.generate_content(model=MODEL_NAME, contents=prompt_text)
 
             except Exception as e:
                 return JSONResponse({'status': 'failed', 'reason': f'LLM_call_failed: {e}', 'run_result': run_res, 'solution': current_code}, status_code=500)
@@ -1212,8 +1199,7 @@ async def test2_endpoint_json(payload: Dict[str, Any]):
     except Exception as e:
         return JSONResponse({"status": "failed", "reason": f"missing_llm_lib: {e}", "last_error": last_error}, status_code=500)
 
-    genai.configure(api_key=GOOGLE_API_KEY)
-    model = genai.GenerativeModel(MODEL_NAME)
+    client = genai.Client(api_key=GOOGLE_API_KEY)
 
     raw_llm_text = None
     last_solution = None
@@ -1300,9 +1286,7 @@ If a corrected solution is provided, reply with the full Python code in a single
             mapping_text = ("\n-- Image mapping (attachment order) --\n" + "\n".join(image_map_lines)) if image_map_lines else ""
             prompt_with_map = prompt + ("\n\n" + mapping_text if mapping_text else "")
             try:
-                # resp = model.generate_content(prompt_with_map)//oldapi
                 resp = client.models.generate_content(model=MODEL_NAME, contents=prompt_with_map)
-
                 raw_llm_text = getattr(resp, "text", str(resp)) or ""
             except Exception as e:
                 attempt_errors.append(f"text-only generate failed: {repr(e)}")
