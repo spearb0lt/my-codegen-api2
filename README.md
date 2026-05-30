@@ -367,6 +367,99 @@ Pillow
 
 ---
 
+## Setting Up on Render (Step-by-Step)
+
+> FastAPI server to convert problem zip → generated solution / run-only execution.  
+> Set env var `GOOGLE_API_KEY` to enable LLM calls.  
+> Start: `uvicorn api_server:app --host 0.0.0.0 --port $PORT`
+
+### 1. Push your code to GitHub
+
+```bash
+git init
+git add -A
+git commit -m "Initial commit"
+git remote add origin https://github.com/<your-username>/my-codegen-api2.git
+git push -u origin main
+```
+
+### 2. Create a Render account
+
+Go to [https://render.com](https://render.com) and sign up (GitHub OAuth recommended for easy repo linking).
+
+### 3. Create a new Web Service
+
+1. From the Render Dashboard, click **"New +"** → **"Web Service"**
+2. Connect your GitHub account if not already connected
+3. Select the **`my-codegen-api2`** repository
+4. Configure the service:
+
+| Setting | Value |
+|---------|-------|
+| **Name** | `my-codegen-api2` (or any name you prefer) |
+| **Region** | Choose closest to you (e.g., Oregon, Frankfurt) |
+| **Branch** | `main` |
+| **Runtime** | `Python 3` |
+| **Build Command** | `pip install -r requirements.txt` |
+| **Start Command** | `uvicorn api_server:app --host 0.0.0.0 --port $PORT` |
+| **Instance Type** | Free (or Starter for faster cold starts) |
+
+### 4. Set environment variables
+
+In the Render service settings, go to **"Environment"** tab and add:
+
+| Key | Value | Notes |
+|-----|-------|-------|
+| `GOOGLE_API_KEY` | `your-gemini-api-key` | **Required.** Get from [Google AI Studio](https://aistudio.google.com/apikey) |
+| `MODEL_NAME` | `gemini-3.5-flash` | Optional. Defaults to `gemini-3.5-flash` |
+| `PYTHON_VERSION` | `3.11.6` | Optional. Ensures consistent Python version |
+
+### 5. Deploy
+
+Click **"Create Web Service"**. Render will:
+1. Clone your repo
+2. Run `pip install -r requirements.txt`
+3. Start the server with `uvicorn api_server:app --host 0.0.0.0 --port $PORT`
+
+The service URL will be something like: `https://my-codegen-api2.onrender.com`
+
+### 6. Verify deployment
+
+```bash
+curl https://my-codegen-api2.onrender.com/health
+```
+
+Expected response:
+```json
+{
+  "status": "ok",
+  "model": "gemini-3.5-flash",
+  "pil_available": true,
+  "requests_available": true
+}
+```
+
+### 7. Auto-deploy on push
+
+By default, Render auto-deploys whenever you push to `main`. To update your service:
+
+```bash
+git add -A
+git commit -m "Update"
+git push
+```
+
+Render will automatically rebuild and redeploy within ~1–2 minutes.
+
+### Notes
+
+- **Cold starts:** On the free tier, the service spins down after 15 minutes of inactivity. First request after idle takes ~30–50 seconds to boot.
+- **Timeouts:** Render free tier has a 30-second request timeout. For `/generate` (which can take minutes with retries), upgrade to a paid plan or set `MAX_GENERATION_ATTEMPTS=2` to reduce total time.
+- **Logs:** View live logs from the Render dashboard → your service → "Logs" tab. Useful for debugging 400/500 errors.
+- **Disk:** The `solutions/` directory is ephemeral on Render (lost on redeploy). For persistence, use Render Disks (paid) or treat solutions as temporary.
+
+---
+
 ## License
 
 Private repository. Built for Meta Hacker Cup 2025 AI Track participation.
