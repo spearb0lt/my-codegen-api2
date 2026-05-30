@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from typing import Optional, Dict, Any, List, Tuple
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
-import google.genai as genai
+from google import genai
 from google.genai import types as genai_types
 import traceback
 import time, io
@@ -427,7 +427,6 @@ def health():
 async def generate(file: UploadFile = File(...), check: bool = Form(True)):
     if not GOOGLE_API_KEY:
         raise HTTPException(status_code=500, detail="Server missing GOOGLE_API_KEY env var for generation.")
-    import google.genai as genai
     client = genai.Client(api_key=GOOGLE_API_KEY)
 
     tmp_root = Path(tempfile.mkdtemp(prefix="gen_"))
@@ -811,10 +810,6 @@ async def test_solution(
     if not GOOGLE_API_KEY:
         return JSONResponse({'status': 'failed', 'reason': 'no_google_api_key', 'run_result': run_res, 'solution': current_code}, status_code=400)
 
-    try:
-        import google.genai as genai
-    except Exception as e:
-        return JSONResponse({'status': 'failed', 'reason': f'missing_llm_lib: {e}', 'run_result': run_res, 'solution': current_code}, status_code=500)
     client = genai.Client(api_key=GOOGLE_API_KEY)
 
     last_code = current_code; last_error = f"Initial run failed. stdout:\n{run_res['stdout']}\nstderr:\n{run_res['stderr']}"
@@ -883,29 +878,28 @@ If a corrected solution is provided, reply with the full Python code in a single
         if pil_images or image_urls or photo_placeholders:
             prompt_text += "\nI will also prov/ide you the images in same order as that of their occurance. Make sure gather sufficient insights from them and approach the problem."
   
-        if resp is None:
-            image_map_text = ''
-            if photo_placeholders:
-                map_lines = []
-                for ph in photo_placeholders:
-                    pid = ph.get('id'); match = None
-                    for p in images_in_dir:
-                        if pid in p.name: match = p.name; break
-                    map_lines.append(f"PHOTO_ID {pid} maps to file {match or '[no-match]'}")
-                image_map_text += '\n'.join(map_lines)
-            if image_urls: image_map_text += '\nImage URLs:\n' + '\n'.join(image_urls)
-            if image_map_text: prompt_text = prompt_text + '\n\n' + image_map_text
-            try:
-                resp = client.models.generate_content(
-                    model=MODEL_NAME,
-                    contents=prompt_text,
-                    config=genai_types.GenerateContentConfig(
-                        thinking_config=genai_types.ThinkingConfig(thinking_level="high")
-                    )
+        resp = None
+        image_map_text = ''
+        if photo_placeholders:
+            map_lines = []
+            for ph in photo_placeholders:
+                pid = ph.get('id'); match = None
+                for p in images_in_dir:
+                    if pid in p.name: match = p.name; break
+                map_lines.append(f"PHOTO_ID {pid} maps to file {match or '[no-match]'}")
+            image_map_text += '\n'.join(map_lines)
+        if image_urls: image_map_text += '\nImage URLs:\n' + '\n'.join(image_urls)
+        if image_map_text: prompt_text = prompt_text + '\n\n' + image_map_text
+        try:
+            resp = client.models.generate_content(
+                model=MODEL_NAME,
+                contents=prompt_text,
+                config=genai_types.GenerateContentConfig(
+                    thinking_config=genai_types.ThinkingConfig(thinking_level="high")
                 )
-
-            except Exception as e:
-                return JSONResponse({'status': 'failed', 'reason': f'LLM_call_failed: {e}', 'run_result': run_res, 'solution': current_code}, status_code=500)
+            )
+        except Exception as e:
+            return JSONResponse({'status': 'failed', 'reason': f'LLM_call_failed: {e}', 'run_result': run_res, 'solution': current_code}, status_code=500)
 
         raw_llm_text = getattr(resp, 'text', str(resp)) or ""
         code_candidate = extract_python_from_markdown(raw_llm_text) or (raw_llm_text or "").strip()
@@ -1206,11 +1200,6 @@ async def test2_endpoint_json(payload: Dict[str, Any]):
     if not GOOGLE_API_KEY:
         (solution_dir / "metadata.json").write_text(json.dumps({"solution_id": solution_id, "last_error": last_error, "timestamp": time.time()}), encoding="utf-8")
         return JSONResponse({"status": "failed", "reason": "no_google_api_key", "last_error": last_error}, status_code=400)
-
-    try:
-        import google.genai as genai
-    except Exception as e:
-        return JSONResponse({"status": "failed", "reason": f"missing_llm_lib: {e}", "last_error": last_error}, status_code=500)
 
     client = genai.Client(api_key=GOOGLE_API_KEY)
 
