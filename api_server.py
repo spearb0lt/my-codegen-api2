@@ -40,7 +40,7 @@ except Exception:
 SOLUTIONS_DIR = Path(os.getenv("SOLUTIONS_DIR", "solutions"))
 SOLUTIONS_DIR.mkdir(parents=True, exist_ok=True)
 
-MODEL_NAME = os.getenv("MODEL_NAME", "gemini-3.5-flash")
+MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.5-pro")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 MAX_GENERATION_ATTEMPTS = int(os.getenv("MAX_GENERATION_ATTEMPTS", "4"))
 EXECUTION_TIMEOUT = int(os.getenv("EXECUTION_TIMEOUT", "300"))
@@ -463,7 +463,7 @@ async def generate(file: UploadFile = File(...), check: bool = Form(True)):
         image_urls = []
         pil_images = []   # list of dicts: {"name":..., "img":PIL.Image, "uri":..., "debug":...}
         multimodal_errors = []
-        aa="Curnt "
+        
 
         for p in image_files:
             # Determine if file is a URI text file by suffix
@@ -554,7 +554,6 @@ Please provide a corrected most optimized and complete Python solution in one ma
 
         # --- 1) Try passing PIL.Image objects as prompt parts (preferred)
             # if MULTIMODAL_MODE and pil_images:
-            #     aa+=" 1 done "
             #     try:
             #         prompt_parts = [prompt] + [pi["img"] for pi in pil_images[:MAX_IMAGES_IN_PROMPT]]
             #         resp = model.generate_content(prompt_parts)
@@ -567,7 +566,6 @@ Please provide a corrected most optimized and complete Python solution in one ma
             
             
             if resp is None:
-                aa+=" 2 also "
                 if pil_images or image_urls or photo_placeholders:
                     prompt += "\nI will also prov/ide you the images in same order as that of their occurance. Make sure gather sufficient insights from them and approach the problem."
     ## 2) Fallback: text-only prompt that includes explicit image mapping & URLs
@@ -602,7 +600,6 @@ Please provide a corrected most optimized and complete Python solution in one ma
 # explicitly maps attachments and includes the image URLs inline.
             # if resp is None:
             #     # Build a deterministic mapping text (Image 1 -> PHOTO_ID:..., Image 2 -> ...)
-            #     aa+=" 2 done "
             #     mapping_lines = []
             #     image_urls_for_text = []
             #     for idx, pi in enumerate(pil_images, start=1):
@@ -635,7 +632,6 @@ Please provide a corrected most optimized and complete Python solution in one ma
 
             
             # if resp is None:
-            #     aa+=" 4 done "
             #     image_map_text = ""
             #     if photo_placeholders:
             #         pid_map_lines = []
@@ -706,7 +702,6 @@ Please provide a corrected most optimized and complete Python solution in one ma
     
                 return JSONResponse({
                     "status": "generated",
-                    "actually": aa,
                     "attempt": attempt,
                      "crazy": crazy_llm_text,
                     "solution_id": solution_id,
@@ -723,7 +718,6 @@ Please provide a corrected most optimized and complete Python solution in one ma
         # exhausted attempts
         return JSONResponse({
             "status": "failed",
-            "actually": aa,
             "attempts": MAX_GENERATION_ATTEMPTS,
             "crazy": crazy_llm_text,
             "multimodal_errors": multimodal_errors,
