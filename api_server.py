@@ -40,7 +40,7 @@ except Exception:
 SOLUTIONS_DIR = Path(os.getenv("SOLUTIONS_DIR", "solutions"))
 SOLUTIONS_DIR.mkdir(parents=True, exist_ok=True)
 
-MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.5-pro")
+MODEL_NAME = os.getenv("MODEL_NAME", "gemini-3.5-flash")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 MAX_GENERATION_ATTEMPTS = int(os.getenv("MAX_GENERATION_ATTEMPTS", "4"))
 EXECUTION_TIMEOUT = int(os.getenv("EXECUTION_TIMEOUT", "300"))
